@@ -39,7 +39,7 @@ ENV/
 
 # Project specific
 annotations.csv
-images/
+images*/
 images/
 data/
 output/
