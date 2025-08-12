@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+annotations.csv
+images/
+images/
+data/
+output/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# pyenv
+.python-version
+
+# UV
+uv.lock
+
+# Session keys
+.sesskey
+
+# Claude
+.claude/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation builds
+docs/_build/
