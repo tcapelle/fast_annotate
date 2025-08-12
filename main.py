@@ -23,7 +23,7 @@ app, rt = fast_app()
 state = AppState()
 
 @rt("/")
-def get():
+def index():
     """Main annotation interface."""
     if not state.image_files:
         return Titled(config.title,
@@ -52,36 +52,20 @@ def get():
                 cls="image-container"
             ),
             Div(config.description, cls="description") if config.description else None,
-            Form(
+            Div(
                 Div(
-                    Div(
-                        f"Current Rating: ",
-                        Span(current_annotation if current_annotation > 0 else 'Not rated', id="rating-display"),
-                        cls="current-rating"
-                    ),
-                    Div(
-                        Input(
-                            type="range", 
-                            min="1", 
-                            max=str(config.num_classes), 
-                            value=str(current_annotation or (config.num_classes // 2 + 1)),
-                            name="rating", 
-                            cls="slider", 
-                            id="rating-slider"
-                        ),
-                        cls="rating-controls"
-                    ),
-                    create_rating_buttons(current_annotation),
-                    create_navigation_controls(state),
-                    create_help_text(),
-                    cls="controls"
+                    f"Current Rating: ",
+                    Span(current_annotation if current_annotation > 0 else 'Not rated', id="rating-display"),
+                    cls="current-rating"
                 ),
-                hx_post="/annotate",
-                hx_target="body"
+                create_rating_buttons(current_annotation),
+                create_navigation_controls(state),
+                create_help_text(),
+                cls="controls"
             ),
             cls="container"
         ),
-        get_app_script(current_annotation)
+        get_app_script()
     )
 
 @rt("/images/{image_name:path}")
@@ -107,61 +91,43 @@ def get_image(image_name: str):
         )
     return Response("Image not found", status_code=404)
 
-@rt("/annotate_and_next", methods=["POST"])
-async def annotate_and_next(request):
+@rt("/rate/{rating:int}", methods=["POST"])
+def rate(rating: int):
     """Save annotation and move to next image."""
-    try:
-        data = await request.json()
-        rating = int(data.get('rating', 0))
+    if rating not in config.rating_range:
+        return index()
+    
+    current_image = state.get_current_image()
+    if current_image:
+        # Store in history for undo
+        old_annotation = state.annotations.get(current_image.name, None)
+        state.add_to_history(current_image.name, old_annotation)
         
-        if rating not in config.rating_range:
-            return {"success": False, "error": f"Invalid rating. Must be 1-{config.num_classes}"}
+        # Save annotation
+        state.save_annotation(current_image.name, rating)
         
-        current_image = state.get_current_image()
-        if current_image:
-            # Store in history for undo
-            old_annotation = state.annotations.get(current_image.name, None)
-            state.add_to_history(current_image.name, old_annotation)
-            
-            # Save annotation
-            if not state.save_annotation(current_image.name, rating):
-                return {"success": False, "error": "Failed to save"}
-            
-            # Move to next image
-            state.navigate(1)
-        
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        # Move to next image
+        state.navigate(1)
+    
+    return index()
 
-@rt("/navigate", methods=["POST"])
-async def navigate(request):
-    """Navigate to next/previous image."""
-    try:
-        data = await request.json()
-        direction = int(data.get('direction', 0))
-        
-        if direction not in [-1, 1]:
-            return {"success": False, "error": "Invalid direction"}
-        
-        state.navigate(direction)
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+@rt("/prev", methods=["POST"])
+def prev():
+    """Navigate to previous image."""
+    state.navigate(-1)
+    return index()
+
+@rt("/next", methods=["POST"])
+def next():
+    """Navigate to next image."""
+    state.navigate(1)
+    return index()
 
 @rt("/undo", methods=["POST"])
 def undo():
     """Undo last annotation and go back to previous image."""
-    image_name = state.undo_last_annotation()
-    if image_name:
-        return {"success": True, "image": image_name}
-    return {"success": False, "error": "No history to undo"}
-
-@rt("/stats")
-def get_stats():
-    """Get annotation statistics."""
-    stats = state.get_progress_stats()
-    return stats
+    state.undo_last_annotation()
+    return index()
 
 if __name__ == "__main__":
     print(f"Starting {config.title}")
