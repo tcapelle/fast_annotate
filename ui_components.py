@@ -24,6 +24,7 @@ def get_app_styles():
         .undo-btn { background: #ffc107; color: black; }
         .undo-btn:hover { background: #e0a800; }
         .progress { margin-bottom: 8px; font-size: 13px; color: #333; font-weight: 500; }
+        .folder-name { color: #007bff; font-weight: 600; }
         .progress-bar { width: 100%; height: 3px; background: #e9ecef; border-radius: 2px; margin: 5px 0 10px 0; }
         .progress-fill { height: 100%; background: #007bff; border-radius: 2px; transition: width 0.3s; }
         .current-rating { font-size: 16px; font-weight: bold; color: #007bff; margin: 8px 0; }
@@ -136,11 +137,12 @@ def get_app_script(current_annotation: int):
     """)
 
 def create_progress_bar(stats: dict) -> Div:
-    """Create a progress bar component."""
+    """Create a progress bar component with folder info."""
     return Div(
         Div(
             f"Image {stats['current']} of {stats['total']} | ",
-            f"Annotated: {stats['annotated']}/{stats['total']} ({stats['percentage']}%)",
+            f"Annotated: {stats['annotated']}/{stats['total']} ({stats['percentage']}%) | ",
+            Span(f"📁 {config.images_folder}", cls="folder-name"),
             cls="progress"
         ),
         Div(
