@@ -1,6 +1,6 @@
 # Fast Image Annotation
 
-![](fast_annotate.png)
+![Picaflor](fast_annotate.png)
 
 A fastHTML image annotator - Simple, keyboard-driven image annotation tool built with FastHTML.
 
