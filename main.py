@@ -42,7 +42,7 @@ def index():
     return Titled(config.title,
         get_app_styles(),
         Div(
-            create_progress_bar(stats),
+            create_progress_bar(stats, state.filter_unannotated),
             Div(
                 f"Current: {current_image.name}",
                 cls="progress"
@@ -127,6 +127,12 @@ def next():
 def undo():
     """Undo last annotation and go back to previous image."""
     state.undo_last_annotation()
+    return index()
+
+@rt("/toggle_filter", methods=["POST"])
+def toggle_filter():
+    """Toggle the filter for showing only unannotated images."""
+    state.toggle_filter()
     return index()
 
 if __name__ == "__main__":
