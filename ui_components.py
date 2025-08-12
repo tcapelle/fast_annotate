@@ -11,8 +11,6 @@ def get_app_styles():
         .image-container { text-align: center; margin-bottom: 10px; position: relative; min-height: 400px; display: flex; align-items: center; justify-content: center; }
         .image-container img { max-width: 100%; max-height: 400px; border: 2px solid #ddd; border-radius: 4px; }
         .controls { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-        .rating-controls { display: flex; align-items: center; gap: 10px; }
-        .slider { width: 250px; }
         .rating-buttons { display: flex; gap: 8px; }
         .rating-btn { padding: 8px 12px; border: 2px solid #007bff; background: white; color: #007bff; cursor: pointer; border-radius: 4px; font-size: 14px; font-weight: bold; transition: all 0.2s; }
         .rating-btn:hover { transform: scale(1.05); }
@@ -33,106 +31,36 @@ def get_app_styles():
         .description { font-size: 13px; color: #495057; margin-bottom: 10px; text-align: center; font-weight: 500; }
     """)
 
-def get_app_script(current_annotation: int):
-    """Return application JavaScript."""
+def get_app_script():
+    """Return application JavaScript for keyboard shortcuts."""
     return Script(f"""
-        let currentRating = {current_annotation or 3};
-        const NUM_CLASSES = {config.num_classes};
-        
-        function setRating(rating) {{
-            if (rating < 1 || rating > NUM_CLASSES) return;
-            
-            currentRating = rating;
-            document.getElementById('rating-slider').value = rating;
-            
-            // Update button styles
-            document.querySelectorAll('.rating-btn').forEach((btn, index) => {{
-                btn.classList.toggle('active', index === rating - 1);
-            }});
-            
-            // Save and advance to next image
-            saveAndNext(rating);
-        }}
-        
-        function saveAndNext(rating) {{
-            fetch('/annotate_and_next', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{rating: rating}})
-            }})
-            .then(response => response.json())
-            .then(data => {{
-                if (data.success) {{
-                    location.reload();
-                }}
-            }})
-            .catch(error => console.error('Error:', error));
-        }}
-        
-        function navigate(direction) {{
-            fetch('/navigate', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{direction: direction}})
-            }})
-            .then(response => response.json())
-            .then(data => {{
-                if (data.success) {{
-                    location.reload();
-                }}
-            }})
-            .catch(error => console.error('Error:', error));
-        }}
-        
-        function undoAnnotation() {{
-            fetch('/undo', {{method: 'POST'}})
-            .then(response => response.json())
-            .then(data => {{
-                if (data.success) {{
-                    location.reload();
-                }}
-            }})
-            .catch(error => console.error('Error:', error));
-        }}
-        
-        // Keyboard shortcuts
+        // Keyboard shortcuts only - HTMX handles all interactions
         document.addEventListener('keydown', function(e) {{
-            if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+            if (e.target.tagName === 'INPUT') return;
             
-            // Dynamic number key handling based on num_classes
-            if (e.key >= '1' && e.key <= String(NUM_CLASSES)) {{
-                setRating(parseInt(e.key));
+            // Number keys for rating
+            if (e.key >= '1' && e.key <= '{config.num_classes}') {{
+                const btn = document.querySelectorAll('.rating-btn')[parseInt(e.key) - 1];
+                if (btn) btn.click();
                 e.preventDefault();
                 return;
             }}
             
+            // Navigation shortcuts
             switch(e.key) {{
                 case 'ArrowLeft':
-                    navigate(-1);
+                    document.querySelector('.nav-btn:not(.undo-btn)')?.click();
                     e.preventDefault();
                     break;
                 case 'ArrowRight':
-                    navigate(1);
+                    document.querySelector('.nav-btn:last-child')?.click();
                     e.preventDefault();
                     break;
                 case 'u': case 'U':
-                    undoAnnotation();
+                    document.querySelector('.undo-btn')?.click();
                     e.preventDefault();
                     break;
             }}
-        }});
-        
-        // Update slider display
-        document.getElementById('rating-slider')?.addEventListener('input', function(e) {{
-            currentRating = parseInt(e.target.value);
-            
-            // Update button styles
-            document.querySelectorAll('.rating-btn').forEach((btn, index) => {{
-                btn.classList.toggle('active', index === currentRating - 1);
-            }});
-            
-            // Update display
-            document.getElementById('rating-display').textContent = currentRating;
         }});
     """)
 
@@ -157,9 +85,11 @@ def create_rating_buttons(current_annotation: int) -> Div:
     for i in config.rating_range:
         buttons.append(
             Button(
-                str(i), type="button",
+                str(i),
                 cls=f"rating-btn {'active' if current_annotation == i else ''}",
-                onclick=f"setRating({i})"
+                hx_post=f"/rate/{i}",
+                hx_target="body",
+                hx_swap="outerHTML"
             )
         )
     return Div(*buttons, cls="rating-buttons")
@@ -168,18 +98,24 @@ def create_navigation_controls(state) -> Div:
     """Create navigation control buttons."""
     return Div(
         Button(
-            "← Previous", type="button", cls="nav-btn",
-            onclick="navigate(-1)",
+            "← Previous", cls="nav-btn",
+            hx_post="/prev",
+            hx_target="body",
+            hx_swap="outerHTML",
             disabled=state.current_index == 0
         ),
         Button(
-            "Undo (U)", type="button", cls="nav-btn undo-btn",
-            onclick="undoAnnotation()",
+            "Undo (U)", cls="nav-btn undo-btn",
+            hx_post="/undo",
+            hx_target="body",
+            hx_swap="outerHTML",
             disabled=len(state.annotation_history) == 0
         ),
         Button(
-            "Next →", type="button", cls="nav-btn",
-            onclick="navigate(1)",
+            "Next →", cls="nav-btn",
+            hx_post="/next",
+            hx_target="body",
+            hx_swap="outerHTML",
             disabled=state.current_index >= len(state.image_files) - 1
         ),
         cls="nav-controls"
