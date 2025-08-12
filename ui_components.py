@@ -25,6 +25,9 @@ def get_app_styles():
         .folder-name { color: #007bff; font-weight: 600; }
         .progress-bar { width: 100%; height: 3px; background: #e9ecef; border-radius: 2px; margin: 5px 0 10px 0; }
         .progress-fill { height: 100%; background: #007bff; border-radius: 2px; transition: width 0.3s; }
+        .filter-container { margin: 8px 0; text-align: center; }
+        .filter-label { font-size: 13px; color: #495057; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+        .filter-checkbox { cursor: pointer; }
         .current-rating { font-size: 16px; font-weight: bold; color: #007bff; margin: 8px 0; }
         .kbd { padding: 2px 4px; font-size: 10px; color: #fff; background-color: #333; border-radius: 3px; }
         .help-text { font-size: 11px; color: #666; margin-top: 8px; }
@@ -64,8 +67,8 @@ def get_app_script():
         }});
     """)
 
-def create_progress_bar(stats: dict) -> Div:
-    """Create a progress bar component with folder info."""
+def create_progress_bar(stats: dict, filter_active: bool = False) -> Div:
+    """Create a progress bar component with folder info and filter."""
     return Div(
         Div(
             f"Image {stats['current']} of {stats['total']} | ",
@@ -76,6 +79,21 @@ def create_progress_bar(stats: dict) -> Div:
         Div(
             Div(style=f"width: {stats['percentage']}%", cls="progress-fill"),
             cls="progress-bar"
+        ),
+        Div(
+            Label(
+                Input(
+                    type="checkbox",
+                    checked=filter_active,
+                    hx_post="/toggle_filter",
+                    hx_target="body",
+                    hx_swap="outerHTML",
+                    cls="filter-checkbox"
+                ),
+                " Show unannotated only",
+                cls="filter-label"
+            ),
+            cls="filter-container"
         )
     )
 

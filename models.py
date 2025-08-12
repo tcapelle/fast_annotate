@@ -17,6 +17,7 @@ class AppState:
         self.image_files = self._load_images()
         self.current_index = self._find_first_unannotated()
         self.username = os.environ.get('USER') or os.environ.get('USERNAME') or 'unknown'
+        self.filter_unannotated = False  # Filter to show only unannotated images
     
     def _load_images(self) -> List[Path]:
         """Load all image files from the configured directory."""
@@ -118,11 +119,27 @@ class AppState:
         return annotation if annotation else 0
     
     def navigate(self, direction: int) -> bool:
-        """Navigate to next/previous image."""
-        new_index = self.current_index + direction
-        if 0 <= new_index < len(self.image_files):
-            self.current_index = new_index
-            return True
+        """Navigate to next/previous image, optionally skipping annotated ones."""
+        if not self.filter_unannotated:
+            # Normal navigation
+            new_index = self.current_index + direction
+            if 0 <= new_index < len(self.image_files):
+                self.current_index = new_index
+                return True
+        else:
+            # Skip annotated images when filter is on
+            new_index = self.current_index
+            while True:
+                new_index += direction
+                if not (0 <= new_index < len(self.image_files)):
+                    return False
+                # Check if this image is unannotated
+                if self.image_files[new_index].name not in self.annotations:
+                    self.current_index = new_index
+                    return True
+                # If we've gone through all images and found none unannotated
+                if abs(new_index - self.current_index) >= len(self.image_files):
+                    return False
         return False
     
     def undo_last_annotation(self) -> Optional[str]:
@@ -159,3 +176,20 @@ class AppState:
             'remaining': total - annotated,
             'percentage': round(100 * annotated / total) if total > 0 else 0
         }
+    
+    def toggle_filter(self) -> None:
+        """Toggle the filter for showing only unannotated images."""
+        self.filter_unannotated = not self.filter_unannotated
+        
+        # If filter is now on and current image is annotated, find next unannotated
+        if self.filter_unannotated and self.get_current_image():
+            current_img = self.get_current_image()
+            if current_img.name in self.annotations:
+                # Try to find next unannotated image
+                original_index = self.current_index
+                if not self.navigate(1):
+                    # If forward navigation failed, try backward
+                    self.current_index = original_index
+                    if not self.navigate(-1):
+                        # No unannotated images found, keep current position
+                        self.current_index = original_index
