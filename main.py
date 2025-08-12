@@ -68,12 +68,9 @@ def index():
         get_app_script()
     )
 
-@rt("/{folder}/{image_name:path}")
-def get_image(folder: str, image_name: str):
+@rt(f"/{config.images_folder}/{{image_name:path}}")
+def get_image(image_name: str):
     """Serve image files with security checks."""
-    # Verify the folder matches our configured folder
-    if folder != config.images_folder:
-        return Response("Invalid folder", status_code=404)
     # Validate filename to prevent path traversal
     if not re.match(r'^[a-zA-Z0-9_.-]+\.(jpg|jpeg|png)$', image_name, re.IGNORECASE):
         return Response("Invalid filename", status_code=400)
