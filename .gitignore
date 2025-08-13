@@ -6,70 +6,36 @@ __pycache__/
 .Python
 env/
 venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environment
-venv/
-env/
-ENV/
 .venv/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# CSV files (no longer used)
+*.csv
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# OS
 .DS_Store
+Thumbs.db
 
 # Project specific
-annotations.csv
-images*/
-images/
-data/
-output/
-
-# Logs
-*.log
-
-# Environment variables
-.env
-.env.local
-
-# Jupyter Notebooks
-.ipynb_checkpoints/
-
-# pyenv
-.python-version
+wandb/
+*.backup
 
 # UV
+.venv/
 uv.lock
 
-# Session keys
-.sesskey
+# Images
+images*/
 
 # Claude
 .claude/
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Documentation builds
-docs/_build/
