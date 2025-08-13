@@ -6,25 +6,18 @@ import yaml
 import os
 import re
 from datetime import datetime
+from dataclasses import dataclass
+import simple_parsing as sp
 
-# Load configuration
-def load_config():
-    config_path = Path("config.yaml")
-    default_config = {
-        "title": "Image Annotation Tool",
-        "description": "Annotate images",
-        "num_classes": 5,
-        "images_folder": "images",
-        "max_history": 10
-    }
-    
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-            return {**default_config, **config}
-    return default_config
+@dataclass
+class Config:
+    title: str = "Image Annotation Tool"
+    description: str = "Annotate images"
+    num_classes: int = 5
+    images_folder: str = "images"
+    max_history: int = 10
 
-config = load_config()
+config = sp.parse(Config)
 
 # Database setup
 db = database('annotations.db')
@@ -62,13 +55,14 @@ state = AppState()
 # Helper functions
 def get_image_files():
     """Get all image files from the configured directory."""
-    images_dir = Path(config['images_folder'])
+    images_dir = Path(config.images_folder)
     images = []
     if images_dir.exists():
         for ext in ['.jpg', '.jpeg', '.png']:
-            images.extend(images_dir.glob(f"*{ext}"))
-            images.extend(images_dir.glob(f"*{ext.upper()}"))
-    return sorted(images)
+            images.extend(images_dir.rglob(f"*{ext}"))
+            images.extend(images_dir.rglob(f"*{ext.upper()}"))
+    # Return paths relative to the images folder
+    return sorted([img.relative_to(images_dir) for img in images])
 
 def get_username():
     """Get current username."""
@@ -84,11 +78,11 @@ def get_current_image():
         # Find next unannotated image from current position
         annotated_images = {a.image_path for a in annotations()}
         for i in range(state.current_index, len(images)):
-            if images[i].name not in annotated_images:
+            if str(images[i]) not in annotated_images:
                 return images[i]
         # Try from beginning if nothing found after current position
         for i in range(0, state.current_index):
-            if images[i].name not in annotated_images:
+            if str(images[i]) not in annotated_images:
                 state.current_index = i
                 return images[i]
         return None
@@ -113,10 +107,10 @@ def get_progress_stats():
         'percentage': round(100 * annotated_count / total) if total > 0 else 0
     }
 
-def get_annotation_for_image(image_name):
+def get_annotation_for_image(image_path):
     """Get annotation data for a specific image."""
-    # Use parameterized query
-    result = annotations("image_path=?", (image_name,), limit=1)
+    # Use parameterized query - image_path should be the relative path string
+    result = annotations("image_path=?", (str(image_path),), limit=1)
     if result:
         return {'rating': result[0].rating, 'marked': getattr(result[0], 'marked', False)}
     return {'rating': 0, 'marked': False}
@@ -126,24 +120,24 @@ def index():
     """Main annotation interface."""
     images = get_image_files()
     if not images:
-        return Titled(config['title'],
-            Div(f"No images found in {config['images_folder']}/ directory", 
+        return Titled(config.title,
+            Div(f"No images found in {config.images_folder}/ directory", 
                 style="max-width: 800px; margin: 2rem auto; padding: 2rem; background: white; border-radius: 8px;")
         )
     
     current_image = get_current_image()
     if not current_image:
-        return Titled(config['title'],
+        return Titled(config.title,
             Div("All images have been reviewed!", 
                 style="max-width: 800px; margin: 2rem auto; padding: 2rem; background: white; border-radius: 8px;")
         )
     
-    annotation_data = get_annotation_for_image(current_image.name)
+    annotation_data = get_annotation_for_image(current_image)
     current_rating = annotation_data['rating']
     is_marked = annotation_data['marked']
     stats = get_progress_stats()
     
-    return Titled(config['title'],
+    return Titled(config.title,
         Div(
             # Progress section
             Div(
@@ -151,7 +145,7 @@ def index():
                     f"Image {state.current_index + 1} of {stats['total']} | ",
                     f"Annotated: {stats['annotated']}/{stats['total']} ({stats['percentage']}%) | ",
                     f"Marked: {stats['marked']} | ",
-                    Span(f"📁 {config['images_folder']}", cls="folder-name"),
+                    Span(f"📁 {config.images_folder}", cls="folder-name"),
                     cls="progress"
                 ),
                 Div(
@@ -176,16 +170,16 @@ def index():
             ),
             
             # Current image info
-            Div(f"Current: {current_image.name}", cls="progress"),
+            Div(f"Current: {current_image}", cls="progress"),
             
             # Image display
             Div(
-                Img(src=f"/{config['images_folder']}/{current_image.name}", alt=current_image.name),
+                Img(src=f"/{config.images_folder}/{current_image}", alt=str(current_image)),
                 cls="image-container"
             ),
             
             # Description if present
-            Div(config['description'], cls="description") if config.get('description') else None,
+            Div(config.description, cls="description") if config.description else None,
             
             # Controls section
             Div(
@@ -204,7 +198,7 @@ def index():
                             hx_post=f"/rate/{i}",
                             hx_target="body",
                             hx_swap="outerHTML"
-                        ) for i in range(1, config['num_classes'] + 1)],
+                        ) for i in range(1, config.num_classes + 1)],
                         cls="rating-buttons"
                     ),
                     Div(
@@ -255,7 +249,7 @@ def index():
                 # Help text
                 Div(
                     "Keyboard shortcuts: ",
-                    Span(f"1-{config['num_classes']}", cls="kbd"), " rate & next | ",
+                    Span(f"1-{config.num_classes}", cls="kbd"), " rate & next | ",
                     Span("←→", cls="kbd"), " navigate | ",
                     Span("U", cls="kbd"), " undo | ",
                 Span("X", cls="kbd"), " mark/unmark",
@@ -271,7 +265,7 @@ def index():
                 if (e.target.tagName === 'INPUT') return;
                 
                 // Number keys for rating
-                if (e.key >= '1' && e.key <= '{config['num_classes']}') {{
+                if (e.key >= '1' && e.key <= '{config.num_classes}') {{
                     const btn = document.querySelectorAll('.rating-btn')[parseInt(e.key) - 1];
                     if (btn) btn.click();
                     e.preventDefault();
@@ -309,19 +303,25 @@ def get_styles():
         return FileResponse(str(css_path), media_type="text/css")
     return Response("/* Styles not found */", media_type="text/css")
 
-@rt(f"/{config['images_folder']}/{{image_name:path}}")
+@rt(f"/{config.images_folder}/{{image_name:path}}")
 def get_image(image_name: str):
     """Serve image files with security checks."""
-    # Validate filename to prevent path traversal
-    if not re.match(r'^[a-zA-Z0-9_.-]+\.(jpg|jpeg|png)$', image_name, re.IGNORECASE):
-        return Response("Invalid filename", status_code=400)
+    # Allow nested paths with proper validation
+    # Check for path traversal attempts
+    if ".." in image_name or image_name.startswith("/"):
+        return Response("Invalid path", status_code=400)
     
-    image_path = Path(config['images_folder']) / image_name
+    # Validate the file extension
+    if not image_name.lower().endswith(('.jpg', '.jpeg', '.png')):
+        return Response("Invalid file type", status_code=400)
+    
+    image_path = Path(config.images_folder) / image_name
     
     # Ensure the resolved path is within images directory
     try:
-        images_dir = Path(config['images_folder']).resolve()
-        if not str(image_path.resolve()).startswith(str(images_dir)):
+        images_dir = Path(config.images_folder).resolve()
+        resolved_path = image_path.resolve()
+        if not str(resolved_path).startswith(str(images_dir)):
             return Response("Access denied", status_code=403)
     except:
         return Response("Invalid path", status_code=400)
@@ -336,7 +336,7 @@ def get_image(image_name: str):
 @rt("/rate/{rating:int}", methods=["POST"])
 def rate(rating: int):
     """Save annotation and move to next image."""
-    if rating < 1 or rating > config['num_classes']:
+    if rating < 1 or rating > config.num_classes:
         return index()
     
     current_image = get_current_image()
@@ -351,8 +351,8 @@ def rate(rating: int):
         })
         
         # Keep history limited
-        if len(state.history) > config.get('max_history', 10):
-            state.history = state.history[-config.get('max_history', 10):]
+        if len(state.history) > config.max_history:
+            state.history = state.history[-config.max_history:]
         
         # Save or update annotation
         # Use parameterized query to prevent SQL injection
@@ -494,11 +494,11 @@ state.current_index = find_first_unannotated()
 
 # Print startup info
 if __name__ == "__main__":
-    print(f"Starting {config['title']}")
+    print(f"Starting {config.title}")
     print(f"Configuration:")
-    print(f"  - Images folder: {config['images_folder']}")
+    print(f"  - Images folder: {config.images_folder}")
     print(f"  - Database: annotations.db")
-    print(f"  - Number of classes: {config['num_classes']}")
+    print(f"  - Number of classes: {config.num_classes}")
     print(f"  - Annotating as: {get_username()}")
     
     images = get_image_files()
