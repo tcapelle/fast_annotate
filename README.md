@@ -98,4 +98,4 @@ MIT License - see [LICENSE](LICENSE) file.
 
 ## Acknowledgments
 
-Built with [FastHTML](https://github.com/AnswerDotAI/fasthtml) - The fast, Pythonic way to create web applications, enjoy.
+Built with [FastHTML](https://github.com/AnswerDotAI/fasthtml) - The fast, Pythonic way to create web applications.

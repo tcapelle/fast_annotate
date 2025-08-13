@@ -700,7 +700,7 @@ def get_styles():
         return FileResponse(str(css_path), media_type="text/css")
     return Response("/* Styles not found */", media_type="text/css")
 
-@rt(f"/{config.images_folder}/{{image_name:path}}")
+@rt(f"/{config['images_folder']}/{{image_name:path}}")
 def get_image(image_name: str):
     """Serve image files with security checks."""
     # Allow nested paths with proper validation
@@ -1069,7 +1069,7 @@ state.current_index = find_first_unannotated()
 
 # Print startup info
 if __name__ == "__main__":
-    print(f"Starting {config.title}")
+    print(f"Starting {config['title']}")
     print(f"Configuration:")
     print(f"  - Images folder: {config.images_folder}")
     print(f"  - Database: {config.images_folder}/annotations.db")
