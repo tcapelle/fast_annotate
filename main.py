@@ -237,6 +237,13 @@ def index():
                         disabled=len(state.history) == 0
                     ),
                     Button(
+                        "Delete (D)", cls="nav-btn delete-btn",
+                        hx_post="/delete",
+                        hx_target="body",
+                        hx_swap="outerHTML",
+                        style="background-color: #dc3545; color: white;"
+                    ),
+                    Button(
                         "Next →", cls="nav-btn",
                         hx_post="/next",
                         hx_target="body",
@@ -252,6 +259,7 @@ def index():
                     Span(f"1-{config.num_classes}", cls="kbd"), " rate & next | ",
                     Span("←→", cls="kbd"), " navigate | ",
                     Span("U", cls="kbd"), " undo | ",
+                    Span("D", cls="kbd"), " delete | ",
                 Span("X", cls="kbd"), " mark/unmark",
                     cls="help-text"
                 ),
@@ -288,6 +296,10 @@ def index():
                         break;
                     case 'x': case 'X':
                         document.querySelector('#mark-checkbox')?.click();
+                        e.preventDefault();
+                        break;
+                    case 'd': case 'D':
+                        document.querySelector('.delete-btn')?.click();
                         e.preventDefault();
                         break;
                 }}
@@ -454,6 +466,32 @@ def toggle_filter():
             if str(img) not in annotated_images:
                 state.current_index = i
                 break
+    
+    return index()
+
+@rt("/delete", methods=["POST"])
+def delete():
+    """Delete annotation for current image."""
+    current_image = get_current_image()
+    if current_image:
+        # Store in history for undo
+        old_annotation_data = get_annotation_for_image(str(current_image))
+        old_annotation = old_annotation_data['rating']
+        if old_annotation > 0:  # Only add to history if there was an annotation
+            state.history.append({
+                'image_name': str(current_image),
+                'old_rating': old_annotation,
+                'index': state.current_index
+            })
+            
+            # Keep history limited
+            if len(state.history) > config.max_history:
+                state.history = state.history[-config.max_history:]
+        
+        # Delete annotation if it exists
+        existing = annotations("image_path=?", (str(current_image),), limit=1)
+        if existing:
+            annotations.delete(existing[0].id)
     
     return index()
 
