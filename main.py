@@ -17,10 +17,10 @@ class Config:
     images_folder: str = "images"
     max_history: int = 10
 
-config = sp.parse(Config)
+config = sp.parse(Config, config_path="./config.yaml")
 
 # Database setup
-db = database('annotations.db')
+db = database(f'{config.images_folder}/annotations.db')
 
 class Annotation:
     id: int
@@ -342,10 +342,10 @@ def rate(rating: int):
     current_image = get_current_image()
     if current_image:
         # Store in history for undo
-        old_annotation_data = get_annotation_for_image(current_image.name)
+        old_annotation_data = get_annotation_for_image(str(current_image))
         old_annotation = old_annotation_data['rating']
         state.history.append({
-            'image_name': current_image.name,
+            'image_name': str(current_image),
             'old_rating': old_annotation,
             'index': state.current_index
         })
@@ -356,7 +356,7 @@ def rate(rating: int):
         
         # Save or update annotation
         # Use parameterized query to prevent SQL injection
-        existing = annotations("image_path=?", (current_image.name,), limit=1)
+        existing = annotations("image_path=?", (str(current_image),), limit=1)
         if existing:
             # Preserve marked status when updating rating
             annotations.update({
@@ -365,7 +365,7 @@ def rate(rating: int):
             }, existing[0].id)
         else:
             annotations.insert({
-                'image_path': current_image.name,
+                'image_path': str(current_image),
                 'rating': rating,
                 'username': get_username(),
                 'timestamp': datetime.now().isoformat(),
@@ -423,7 +423,7 @@ def mark():
     current_image = get_current_image()
     if current_image:
         # Check if annotation exists
-        existing = annotations("image_path=?", (current_image.name,), limit=1)
+        existing = annotations("image_path=?", (str(current_image),), limit=1)
         
         if existing:
             # Toggle the marked status
@@ -432,7 +432,7 @@ def mark():
         else:
             # Create new annotation with just marked flag
             annotations.insert({
-                'image_path': current_image.name,
+                'image_path': str(current_image),
                 'rating': 0,  # No rating yet
                 'username': get_username(),
                 'timestamp': datetime.now().isoformat(),
@@ -451,7 +451,7 @@ def toggle_filter():
         images = get_image_files()
         annotated_images = {a.image_path for a in annotations()}
         for i, img in enumerate(images):
-            if img.name not in annotated_images:
+            if str(img) not in annotated_images:
                 state.current_index = i
                 break
     
@@ -475,7 +475,7 @@ def navigate(direction):
             new_index += direction
             if not (0 <= new_index < len(images)):
                 break
-            if images[new_index].name not in annotated_images:
+            if str(images[new_index]) not in annotated_images:
                 state.current_index = new_index
                 break
 
@@ -485,7 +485,7 @@ def find_first_unannotated():
     images = get_image_files()
     annotated_images = {a.image_path for a in annotations()}
     for i, img in enumerate(images):
-        if img.name not in annotated_images:
+        if str(img) not in annotated_images:
             return i
     return 0
 
@@ -497,7 +497,7 @@ if __name__ == "__main__":
     print(f"Starting {config.title}")
     print(f"Configuration:")
     print(f"  - Images folder: {config.images_folder}")
-    print(f"  - Database: annotations.db")
+    print(f"  - Database: {config.images_folder}/annotations.db")
     print(f"  - Number of classes: {config.num_classes}")
     print(f"  - Annotating as: {get_username()}")
     
@@ -506,6 +506,6 @@ if __name__ == "__main__":
     
     stats = get_progress_stats()
     print(f"  - Already annotated: {stats['annotated']}")
-    print(f"  - Starting at image {state.current_index + 1}: {get_current_image().name if get_current_image() else 'None'}")
+    print(f"  - Starting at image {state.current_index + 1}: {str(get_current_image()) if get_current_image() else 'None'}")
     
     serve()
