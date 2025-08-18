@@ -6,6 +6,7 @@ import yaml
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlencode, quote_plus
 from dataclasses import dataclass
 import simple_parsing as sp
 
@@ -48,7 +49,10 @@ class AppState:
     def __init__(self):
         self.current_index = 0
         self.filter_unannotated = False
+        self.filter_rating = None  # Filter by specific rating (1-5) or None for no filter
         self.history = []
+        self.selected = set()  # set of image relative paths
+        self.last_anchor = None  # last clicked image for shift-selection
 
 state = AppState()
 
@@ -87,6 +91,19 @@ def get_current_image():
                 return images[i]
         return None
     
+    if state.filter_rating is not None:
+        # Find next image with specific rating from current position
+        rating_images = {a.image_path: a.rating for a in annotations() if a.rating == state.filter_rating}
+        for i in range(state.current_index, len(images)):
+            if str(images[i]) in rating_images:
+                return images[i]
+        # Try from beginning if nothing found after current position
+        for i in range(0, state.current_index):
+            if str(images[i]) in rating_images:
+                state.current_index = i
+                return images[i]
+        return None
+    
     if 0 <= state.current_index < len(images):
         return images[state.current_index]
     return None
@@ -115,6 +132,156 @@ def get_annotation_for_image(image_path):
         return {'rating': result[0].rating, 'marked': getattr(result[0], 'marked', False)}
     return {'rating': 0, 'marked': False}
 
+def index_of_image(image_name: str) -> int:
+    """Return index of an image (relative path str) in the image list, or -1."""
+    imgs = get_image_files()
+    for i, p in enumerate(imgs):
+        if str(p) == image_name:
+            return i
+    return -1
+
+def get_annotations_map():
+    """Map of image_path -> {'rating': int, 'marked': bool}."""
+    amap = {}
+    for a in annotations():
+        amap[a.image_path] = {'rating': a.rating, 'marked': getattr(a, 'marked', False)}
+    return amap
+
+def _filtered_items(q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name'):
+    """Return filtered and sorted list of (Path, rating, marked) across entire dataset."""
+    q = (q or '').strip()
+    rating_val = int(rating) if str(rating).isdigit() else None
+    show = (show or 'all')
+    marked_only = (marked == 'on' or marked == 'true' or marked == '1')
+
+    imgs = get_image_files()
+    amap = get_annotations_map()
+
+    items = []
+    for p in imgs:
+        sp = str(p)
+        ann = amap.get(sp, {'rating': 0, 'marked': False})
+        r = ann['rating']
+        m = ann['marked']
+        if q and q.lower() not in sp.lower():
+            continue
+        if rating_val is not None and r != rating_val:
+            continue
+        if show == 'annotated' and r <= 0:
+            continue
+        if show == 'unannotated' and r > 0:
+            continue
+        if marked_only and not m:
+            continue
+        items.append((p, r, m))
+
+    # Sort
+    if sort == 'name_desc':
+        items.sort(key=lambda t: str(t[0]).lower(), reverse=True)
+    elif sort == 'rating_desc':
+        items.sort(key=lambda t: (t[1], str(t[0]).lower()), reverse=True)
+    elif sort == 'rating_asc':
+        items.sort(key=lambda t: (t[1], str(t[0]).lower()))
+    elif sort == 'marked_first':
+        items.sort(key=lambda t: (not t[2], str(t[0]).lower()))
+    else:  # name
+        items.sort(key=lambda t: str(t[0]).lower())
+    return items
+
+def render_browser_grid(q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1', per_page: int = 60):
+    """Return a Div containing a responsive grid of images, filtered and paginated."""
+    # Normalize inputs
+    try:
+        page_i = max(1, int(page or '1'))
+    except Exception:
+        page_i = 1
+    items = _filtered_items(q=q, rating=rating, show=show, marked=marked, sort=sort)
+
+    total = len(items)
+    start = (page_i - 1) * per_page
+    end = start + per_page
+    page_items = items[start:end]
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    def badge(content, cls):
+        return Span(content, cls=cls)
+
+    # Build grid cells
+    cells = []
+    for p, r, m in page_items:
+        sp = str(p)
+        badges = []
+        if r and r > 0:
+            badges.append(badge(f"★ {r}", 'rating-badge'))
+        # Marked status will be shown as a banner overlay instead of a small badge
+
+        # Action buttons: Open in annotator (explicit), click tile toggles selection
+        qstr = urlencode({'image': str(sp)})
+        open_btn = A("Open", href=f"/annotate?{qstr}", cls="grid-open")
+
+        selected_cls = ' selected' if sp in state.selected else ''
+        marked_cls = ' marked' if m else ''
+
+        cells.append(
+            Div(
+                Div(
+                    Img(src=f"/{config.images_folder}/{sp}", alt=sp, cls="grid-img"),
+                    Div(*badges, cls="grid-badges"),
+                    (Div("⚑ MARKED", cls="marked-banner") if m else None),
+                    Div("✓", cls="select-check"),
+                    cls=f"grid-thumb{selected_cls}{marked_cls}",
+                    hx_post="/toggle_select",
+                    hx_target="#browse-grid",
+                    hx_swap="outerHTML",
+                    hx_include=".browser-filters *",
+                    hx_vals=f"js:{{image: '{sp}', shift: event.shiftKey}}"
+                ),
+                Div(sp, cls="grid-name"),
+                Div(open_btn, cls="grid-actions"),
+                cls=f"grid-item{selected_cls}{marked_cls}"
+            )
+        )
+
+    # Pagination controls
+    prev_disabled = page_i <= 1
+    next_disabled = page_i >= total_pages
+    # Keep other filters when paging
+    def page_btn(label, new_page, disabled):
+        params = {
+            'q': q,
+            'rating': rating or '',
+            'show': show,
+            'marked': 'on' if (marked in ('on','true','1')) else '',
+            'sort': sort,
+            'page': str(new_page)
+        }
+        return Button(
+            label,
+            disabled=disabled,
+            hx_get=f"/browse_grid?{urlencode(params)}",
+            hx_target="#browse-grid",
+            hx_swap="outerHTML",
+            cls="page-btn"
+        )
+
+    showing_from = (start + 1) if total > 0 else 0
+    showing_to = min(end, total)
+    grid = Div(
+        Div(
+            f"Showing {showing_from}–{showing_to} of {total} images",
+            Div(
+                page_btn("← Prev", page_i - 1, prev_disabled),
+                Span(f"Page {page_i}/{total_pages}", cls="page-info"),
+                page_btn("Next →", page_i + 1, next_disabled),
+                cls="pager"
+            ),
+            cls="grid-meta"
+        ),
+        Div(*cells, cls="grid"),
+        id="browse-grid"
+    )
+    return grid
+
 @rt("/")
 def index():
     """Main annotation interface."""
@@ -127,10 +294,9 @@ def index():
     
     current_image = get_current_image()
     if not current_image:
-        return Titled(config.title,
-            Div("All images have been reviewed!", 
-                style="max-width: 800px; margin: 2rem auto; padding: 2rem; background: white; border-radius: 8px;")
-        )
+        # If no current image, reset to first image to keep UI functional
+        state.current_index = 0
+        current_image = get_current_image()
     
     annotation_data = get_annotation_for_image(current_image)
     current_rating = annotation_data['rating']
@@ -149,6 +315,10 @@ def index():
                     cls="progress"
                 ),
                 Div(
+                    A("Browse Dataset", href="/browse", cls="browse-link"),
+                    cls="progress"
+                ),
+                Div(
                     Div(style=f"width: {stats['percentage']}%", cls="progress-fill"),
                     cls="progress-bar"
                 ),
@@ -164,6 +334,22 @@ def index():
                         ),
                         " Show unannotated only",
                         cls="filter-label"
+                    ),
+                    Div(
+                        Label("Filter by rating:", style="margin-right: 10px; font-weight: 500;"),
+                        Select(
+                            Option("All ratings", value="", selected=state.filter_rating is None),
+                            *[Option(f"Rating {i}", value=str(i), selected=state.filter_rating == i) 
+                              for i in range(1, config.num_classes + 1)],
+                            name="rating_filter_select",
+                            hx_post="/filter_rating",
+                            hx_target="body",
+                            hx_swap="outerHTML",
+                            hx_trigger="change",
+                            cls="rating-filter-select",
+                            style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd;"
+                        ),
+                        style="margin-top: 10px;"
                     ),
                     cls="filter-container"
                 )
@@ -237,6 +423,13 @@ def index():
                         disabled=len(state.history) == 0
                     ),
                     Button(
+                        "🗑️ Delete Image (D)", cls="nav-btn delete-btn",
+                        hx_post="/delete",
+                        hx_target="body",
+                        hx_swap="outerHTML",
+                        style="background-color: #dc3545; color: white; font-weight: bold;"
+                    ),
+                    Button(
                         "Next →", cls="nav-btn",
                         hx_post="/next",
                         hx_target="body",
@@ -252,6 +445,7 @@ def index():
                     Span(f"1-{config.num_classes}", cls="kbd"), " rate & next | ",
                     Span("←→", cls="kbd"), " navigate | ",
                     Span("U", cls="kbd"), " undo | ",
+                    Span("D", cls="kbd"), " delete | ",
                 Span("X", cls="kbd"), " mark/unmark",
                     cls="help-text"
                 ),
@@ -264,10 +458,14 @@ def index():
             document.addEventListener('keydown', function(e) {{
                 if (e.target.tagName === 'INPUT') return;
                 
-                // Number keys for rating
+                // Number keys for rating (with navigation)
                 if (e.key >= '1' && e.key <= '{config.num_classes}') {{
-                    const btn = document.querySelectorAll('.rating-btn')[parseInt(e.key) - 1];
-                    if (btn) btn.click();
+                    fetch('/rate_and_next/' + e.key, {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}}
+                    }}).then(response => response.text()).then(html => {{
+                        document.body.outerHTML = html;
+                    }});
                     e.preventDefault();
                     return;
                 }}
@@ -290,10 +488,209 @@ def index():
                         document.querySelector('#mark-checkbox')?.click();
                         e.preventDefault();
                         break;
+                    case 'd': case 'D':
+                        document.querySelector('.delete-btn')?.click();
+                        e.preventDefault();
+                        break;
                 }}
             }});
         """)
     )
+
+@rt("/browse")
+def browse(q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    """Dataset browser: filter and review images and annotations."""
+    stats = get_progress_stats()
+    grid = render_browser_grid(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+    # Filter form controls submit via HTMX to update only the grid
+    filter_form = Form(
+        Div(
+            Input(type="search", name="q", placeholder="Search filename…", value=q or '',
+                  hx_get="/browse_grid", hx_target="#browse-grid", hx_trigger="keyup changed delay:300ms", hx_swap="outerHTML", cls="filter-input"),
+            Select(
+                Option("All ratings", value="", selected=(not rating)),
+                *[Option(f"Rating {i}", value=str(i), selected=(rating == str(i))) for i in range(1, config.num_classes + 1)],
+                name="rating", hx_get="/browse_grid", hx_target="#browse-grid", hx_trigger="change", hx_swap="outerHTML", cls="filter-select"
+            ),
+            Select(
+                Option("All", value="all", selected=(show == 'all')),
+                Option("Annotated", value="annotated", selected=(show == 'annotated')),
+                Option("Unannotated", value="unannotated", selected=(show == 'unannotated')),
+                name="show", hx_get="/browse_grid", hx_target="#browse-grid", hx_trigger="change", hx_swap="outerHTML", cls="filter-select"
+            ),
+            Label(
+                Input(type="checkbox", name="marked", checked=(marked in ('on','true','1')),
+                      hx_get="/browse_grid", hx_target="#browse-grid", hx_trigger="change", hx_swap="outerHTML"),
+                Span("Marked only", cls="filter-label"),
+                cls="filter-check"
+            ),
+            Select(
+                Option("Name ↑", value="name", selected=(sort == 'name')),
+                Option("Name ↓", value="name_desc", selected=(sort == 'name_desc')),
+                Option("Rating ↑", value="rating_asc", selected=(sort == 'rating_asc')),
+                Option("Rating ↓", value="rating_desc", selected=(sort == 'rating_desc')),
+                Option("Marked first", value="marked_first", selected=(sort == 'marked_first')),
+                name="sort", hx_get="/browse_grid", hx_target="#browse-grid", hx_trigger="change", hx_swap="outerHTML", cls="filter-select"
+            ),
+            A("Reset", href="/browse", cls="filter-reset"),
+            cls="browser-filters"
+        )
+    )
+
+    # Selection toolbar
+    sel_count = len(state.selected)
+    selection_bar = Div(
+        Div(f"Selected: {sel_count}", cls="sel-count"),
+        Div(
+            Select(
+                Option("Set rating…", value=""),
+                *[Option(f"{i}", value=str(i)) for i in range(1, config.num_classes + 1)],
+                name="set_rating", cls="filter-select"
+            ),
+            Button("Apply", cls="page-btn",
+                   hx_post="/batch_rate", hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
+            Button("Mark", cls="page-btn",
+                   hx_post="/batch_mark", hx_vals={"action": "mark"}, hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
+            Button("Unmark", cls="page-btn",
+                   hx_post="/batch_mark", hx_vals={"action": "unmark"}, hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
+            Button("Clear Selection", cls="page-btn",
+                   hx_post="/clear_selection", hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
+            Button("Open First", cls="page-btn",
+                   hx_post="/open_first_selected", hx_target="body", hx_swap="outerHTML"),
+            cls="sel-actions"
+        ),
+        cls="selection-bar"
+    )
+
+    return Titled(
+        f"{config.title} · Browser",
+        Div(
+            Div(
+                Div(
+                    f"Total: {stats['total']} | Annotated: {stats['annotated']} | Marked: {stats['marked']} | Remaining: {stats['remaining']}",
+                    cls="progress"
+                ),
+                Div(
+                    A("← Back to Annotator", href="/", cls="browse-link"),
+                    cls="progress"
+                ),
+            ),
+            filter_form,
+            selection_bar,
+            grid,
+            cls="browser-container"
+        )
+    )
+
+@rt("/browse_grid")
+def browse_grid(q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    """Partial: just the grid, for HTMX updates from the filter controls."""
+    return render_browser_grid(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+@rt("/annotate")
+def annotate_query(image: str = ''):
+    """Jump to annotator using a query parameter to avoid static route collisions."""
+    if image:
+        idx = index_of_image(image)
+        if idx >= 0:
+            state.current_index = idx
+    return index()
+
+@rt("/toggle_select", methods=["POST"])
+def toggle_select(image: str = '', shift: str = '', q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    sp = image or ''
+    shift_on = str(shift).lower() in ('1', 'true', 'on')
+    if not sp:
+        return render_browser_grid(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+    if shift_on and state.last_anchor:
+        # Select range between last_anchor and current within filtered, sorted items
+        items = _filtered_items(q=q, rating=rating, show=show, marked=marked, sort=sort)
+        order = [str(p) for (p, _r, _m) in items]
+        try:
+            i1 = order.index(state.last_anchor)
+            i2 = order.index(sp)
+            start, end = (i1, i2) if i1 <= i2 else (i2, i1)
+            for s in order[start:end+1]:
+                state.selected.add(s)
+        except ValueError:
+            # If either not in current order, just toggle single
+            if sp in state.selected:
+                state.selected.remove(sp)
+            else:
+                state.selected.add(sp)
+        # Update anchor to current
+        state.last_anchor = sp
+    else:
+        # Toggle single and set anchor
+        if sp in state.selected:
+            state.selected.remove(sp)
+        else:
+            state.selected.add(sp)
+        state.last_anchor = sp
+    return render_browser_grid(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+@rt("/batch_rate", methods=["POST"])
+def batch_rate(set_rating: str = '', q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    if set_rating and set_rating.isdigit():
+        val = int(set_rating)
+        if 1 <= val <= config.num_classes:
+            for spath in list(state.selected):
+                existing = annotations("image_path=?", (spath,), limit=1)
+                if existing:
+                    annotations.update({'rating': val, 'timestamp': datetime.now().isoformat()}, existing[0].id)
+                else:
+                    annotations.insert({
+                        'image_path': spath,
+                        'rating': val,
+                        'username': get_username(),
+                        'timestamp': datetime.now().isoformat(),
+                        'marked': False
+                    })
+    return browse(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+@rt("/batch_mark", methods=["POST"])
+def batch_mark(action: str = 'mark', q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    flag = True if action == 'mark' else False
+    for spath in list(state.selected):
+        existing = annotations("image_path=?", (spath,), limit=1)
+        if existing:
+            annotations.update({'marked': flag}, existing[0].id)
+        else:
+            annotations.insert({
+                'image_path': spath,
+                'rating': 0,
+                'username': get_username(),
+                'timestamp': datetime.now().isoformat(),
+                'marked': flag
+            })
+    return browse(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+@rt("/clear_selection", methods=["POST"])
+def clear_selection(q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    state.selected.clear()
+    return browse(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
+
+@rt("/open_first_selected", methods=["POST"])    
+def open_first_selected():
+    if state.selected:
+        imgs = get_image_files()
+        # Find first selected by list order
+        for i, p in enumerate(imgs):
+            if str(p) in state.selected:
+                state.current_index = i
+                break
+        # Optionally clear selection? keep for now
+    return index()
+
+@rt("/annotate/{image_name:path}", methods=["GET", "POST"])
+def annotate_image(image_name: str):
+    """Jump to annotator at specific image from the browser."""
+    idx = index_of_image(image_name)
+    if idx >= 0:
+        state.current_index = idx
+    return index()
 
 @rt("/styles.css")
 def get_styles():
@@ -335,7 +732,7 @@ def get_image(image_name: str):
 
 @rt("/rate/{rating:int}", methods=["POST"])
 def rate(rating: int):
-    """Save annotation and move to next image."""
+    """Save annotation (button click - stay on image)."""
     if rating < 1 or rating > config.num_classes:
         return index()
     
@@ -347,7 +744,8 @@ def rate(rating: int):
         state.history.append({
             'image_name': str(current_image),
             'old_rating': old_annotation,
-            'index': state.current_index
+            'index': state.current_index,
+            'action': 'rate'
         })
         
         # Keep history limited
@@ -372,7 +770,50 @@ def rate(rating: int):
                 'marked': False
             })
         
-        # Move to next image
+        # Stay on current image after rating
+    
+    return index()
+
+@rt("/rate_and_next/{rating:int}", methods=["POST"])
+def rate_and_next(rating: int):
+    """Save annotation and move to next image (keyboard shortcut)."""
+    if rating < 1 or rating > config.num_classes:
+        return index()
+    
+    current_image = get_current_image()
+    if current_image:
+        # Store in history for undo
+        old_annotation_data = get_annotation_for_image(str(current_image))
+        old_annotation = old_annotation_data['rating']
+        state.history.append({
+            'image_name': str(current_image),
+            'old_rating': old_annotation,
+            'index': state.current_index,
+            'action': 'rate'
+        })
+        
+        # Keep history limited
+        if len(state.history) > config.max_history:
+            state.history = state.history[-config.max_history:]
+        
+        # Save or update annotation
+        existing = annotations("image_path=?", (str(current_image),), limit=1)
+        if existing:
+            # Preserve marked status when updating rating
+            annotations.update({
+                'rating': rating, 
+                'timestamp': datetime.now().isoformat()
+            }, existing[0].id)
+        else:
+            annotations.insert({
+                'image_path': str(current_image),
+                'rating': rating,
+                'username': get_username(),
+                'timestamp': datetime.now().isoformat(),
+                'marked': False
+            })
+        
+        # Move to next image for keyboard shortcuts
         navigate(1)
     
     return index()
@@ -391,29 +832,61 @@ def next():
 
 @rt("/undo", methods=["POST"])
 def undo():
-    """Undo last annotation."""
+    """Undo last action (rating or deletion)."""
     if state.history:
         last_action = state.history.pop()
+        action_type = last_action.get('action', 'rate')  # Default to 'rate' for backward compatibility
         
-        # Restore annotation
-        image_name = last_action['image_name']
-        old_rating = last_action['old_rating']
-        
-        if old_rating == 0:
-            # Delete annotation
-            # Use parameterized query
-            existing = annotations("image_path=?", (image_name,), limit=1)
-            if existing:
-                annotations.delete(existing[0].id)
+        if action_type == 'delete':
+            # Restore deleted image file
+            image_name = last_action['image_name']
+            image_data = last_action.get('image_data')
+            old_rating = last_action['old_rating']
+            
+            if image_data:
+                # Restore the image file
+                image_path = Path(config.images_folder) / image_name
+                try:
+                    # Create parent directories if needed
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(image_path, 'wb') as f:
+                        f.write(image_data)
+                    print(f"Restored image file: {image_path}")
+                    
+                    # Restore annotation if there was one
+                    if old_rating > 0:
+                        annotations.insert({
+                            'image_path': image_name,
+                            'rating': old_rating,
+                            'username': get_username(),
+                            'timestamp': datetime.now().isoformat(),
+                            'marked': False
+                        })
+                    
+                except Exception as e:
+                    print(f"Error restoring image file {image_path}: {e}")
+            
+            # Go back to that image
+            state.current_index = last_action['index']
+            
         else:
-            # Restore old rating
-            # Use parameterized query
-            existing = annotations("image_path=?", (image_name,), limit=1)
-            if existing:
-                annotations.update({'rating': old_rating}, existing[0].id)
-        
-        # Go back to that image
-        state.current_index = last_action['index']
+            # Handle rating undo (existing logic)
+            image_name = last_action['image_name']
+            old_rating = last_action['old_rating']
+            
+            if old_rating == 0:
+                # Delete annotation
+                existing = annotations("image_path=?", (image_name,), limit=1)
+                if existing:
+                    annotations.delete(existing[0].id)
+            else:
+                # Restore old rating
+                existing = annotations("image_path=?", (image_name,), limit=1)
+                if existing:
+                    annotations.update({'rating': old_rating}, existing[0].id)
+            
+            # Go back to that image
+            state.current_index = last_action['index']
     
     return index()
 
@@ -446,8 +919,9 @@ def toggle_filter():
     """Toggle filter for unannotated images."""
     state.filter_unannotated = not state.filter_unannotated
     
-    # Reset to first unannotated if filter is now active
+    # Clear rating filter when toggling unannotated filter
     if state.filter_unannotated:
+        state.filter_rating = None
         images = get_image_files()
         annotated_images = {a.image_path for a in annotations()}
         for i, img in enumerate(images):
@@ -457,16 +931,79 @@ def toggle_filter():
     
     return index()
 
+@rt("/filter_rating", methods=["POST"])
+def filter_rating(rating_filter_select: str = ''):
+    """Filter images by specific rating."""
+    if rating_filter_select == '':
+        state.filter_rating = None
+    else:
+        state.filter_rating = int(rating_filter_select)
+        # Clear unannotated filter when filtering by rating
+        state.filter_unannotated = False
+    
+    # Find first image with the selected rating
+    if state.filter_rating is not None:
+        images = get_image_files()
+        rating_images = {a.image_path for a in annotations() if a.rating == state.filter_rating}
+        for i, img in enumerate(images):
+            if str(img) in rating_images:
+                state.current_index = i
+                break
+    
+    return index()
+
+@rt("/delete", methods=["POST"])
+def delete():
+    """Delete current image file and its annotation."""
+    current_image = get_current_image()
+    if current_image:
+        image_path = Path(config.images_folder) / current_image
+        
+        # Store image data and annotation for undo
+        image_data = None
+        old_annotation_data = get_annotation_for_image(str(current_image))
+        old_annotation = old_annotation_data['rating']
+        
+        if image_path.exists():
+            try:
+                # Read image data before deleting
+                with open(image_path, 'rb') as f:
+                    image_data = f.read()
+                
+                image_path.unlink()  # Delete the file
+                print(f"Deleted image file: {image_path}")
+            except Exception as e:
+                print(f"Error deleting image file {image_path}: {e}")
+                return index()  # Return without changes if file deletion fails
+        
+        # Store in history for undo (including image data)
+        state.history.append({
+            'image_name': str(current_image),
+            'old_rating': old_annotation,
+            'index': state.current_index,
+            'action': 'delete',
+            'image_data': image_data
+        })
+        
+        # Keep history limited
+        if len(state.history) > config.max_history:
+            state.history = state.history[-config.max_history:]
+        
+        # Delete annotation if it exists
+        existing = annotations("image_path=?", (str(current_image),), limit=1)
+        if existing:
+            annotations.delete(existing[0].id)
+        
+        # After deletion, the image list is refreshed and current index automatically
+        # points to what was the next image, so no navigation needed
+    
+    return index()
+
 def navigate(direction):
     """Navigate through images."""
     images = get_image_files()
     
-    if not state.filter_unannotated:
-        # Normal navigation
-        new_index = state.current_index + direction
-        if 0 <= new_index < len(images):
-            state.current_index = new_index
-    else:
+    if state.filter_unannotated:
         # Skip annotated images
         annotated_images = {a.image_path for a in annotations()}
         new_index = state.current_index
@@ -478,6 +1015,23 @@ def navigate(direction):
             if str(images[new_index]) not in annotated_images:
                 state.current_index = new_index
                 break
+    elif state.filter_rating is not None:
+        # Skip images that don't have the selected rating
+        rating_images = {a.image_path for a in annotations() if a.rating == state.filter_rating}
+        new_index = state.current_index
+        
+        while True:
+            new_index += direction
+            if not (0 <= new_index < len(images)):
+                break
+            if str(images[new_index]) in rating_images:
+                state.current_index = new_index
+                break
+    else:
+        # Normal navigation
+        new_index = state.current_index + direction
+        if 0 <= new_index < len(images):
+            state.current_index = new_index
 
 # Find first unannotated image on startup
 def find_first_unannotated():
@@ -488,6 +1042,27 @@ def find_first_unannotated():
         if str(img) not in annotated_images:
             return i
     return 0
+
+def cleanup_orphaned_entries():
+    """Remove database entries for images that no longer exist."""
+    images = get_image_files()
+    existing_image_paths = {str(img) for img in images}
+    
+    # Get all annotations
+    all_annotations = annotations()
+    orphaned_count = 0
+    
+    for annotation in all_annotations:
+        if annotation.image_path not in existing_image_paths:
+            # Image file no longer exists, delete the annotation
+            annotations.delete(annotation.id)
+            orphaned_count += 1
+            print(f"Removed orphaned entry for: {annotation.image_path}")
+    
+    if orphaned_count > 0:
+        print(f"Cleaned up {orphaned_count} orphaned database entries")
+    else:
+        print("No orphaned database entries found")
 
 # Set initial position
 state.current_index = find_first_unannotated()
@@ -501,6 +1076,10 @@ if __name__ == "__main__":
     print(f"  - Number of classes: {config.num_classes}")
     print(f"  - Annotating as: {get_username()}")
     
+    # Clean up orphaned entries on startup
+    print("Checking for orphaned database entries...")
+    cleanup_orphaned_entries()
+    
     images = get_image_files()
     print(f"  - Total images: {len(images)}")
     
@@ -508,4 +1087,10 @@ if __name__ == "__main__":
     print(f"  - Already annotated: {stats['annotated']}")
     print(f"  - Starting at image {state.current_index + 1}: {str(get_current_image()) if get_current_image() else 'None'}")
     
-    serve()
+    try:
+        serve()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        print("Final cleanup of orphaned database entries...")
+        cleanup_orphaned_entries()
+        print("Goodbye!")
