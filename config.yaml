@@ -1,0 +1,5 @@
+title: "Image Annotation Tool"
+description: "Rate each image from 1 to 5"
+num_classes: 5
+images_folder: "images"
+max_history: 10

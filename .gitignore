@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+data/
+wandb/
+tmp/
+.DS_Store
+
 # Distribution / packaging
 .Python
 build/

@@ -1,0 +1,14 @@
+[project]
+name = "fast-annotate"
+version = "0.1.0"
+description = "A fastHTML image annotator - Simple, keyboard-driven image annotation tool"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=4.0.0",
+    "pillow>=11.3.0",
+    "python-fasthtml>=0.4.0",
+    "pyyaml>=6.0",
+    "simple-parsing>=0.1.7",
+    "starlette>=0.37.0",
+]
