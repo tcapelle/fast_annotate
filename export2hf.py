@@ -76,27 +76,26 @@ def export_to_hf_dataset(images_folder, output_dir=None, split="train"):
         
         if not image_path.exists():
             print(f"Warning: Image not found: {image_path}")
-            continue
-        
-        try:
-            # Load and verify image
-            img = Image.open(image_path)
-            img.verify()  # Verify it's a valid image
-            
-            # Re-open after verify (verify closes the file)
-            img = Image.open(image_path)
-            
-            # Add to dataset
-            dataset_dict["image"].append(img)
-            dataset_dict["image_path"].append(row['image_path'])
-            dataset_dict["rating"].append(row['rating'])
-            dataset_dict["username"].append(row['username'])
-            dataset_dict["timestamp"].append(row['timestamp'])
-            dataset_dict["marked"].append(bool(row['marked']))
-            
-        except Exception as e:
-            print(f"Error loading image {image_path}: {e}")
-            continue
+        else:
+            try:
+                # Load and verify image
+                img = Image.open(image_path)
+                img.verify()  # Verify it's a valid image
+                
+                # Re-open after verify (verify closes the file)
+                img = Image.open(image_path)
+                
+                # Add to dataset
+                dataset_dict["image"].append(img)
+                dataset_dict["image_path"].append(row['image_path'])
+                dataset_dict["rating"].append(row['rating'])
+                dataset_dict["username"].append(row['username'])
+                dataset_dict["timestamp"].append(row['timestamp'])
+                dataset_dict["marked"].append(bool(row['marked']))
+                
+            except Exception as e:
+                print(f"Error loading image {image_path}: {e}")
+                continue
     
     if not dataset_dict["image"]:
         print("No valid images found")
