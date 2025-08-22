@@ -12,15 +12,15 @@ import simple_parsing as sp
 
 @dataclass
 class Config:
+    images_folder: str = sp.field(positional=True, help="The folder containing the images and annotations.db")
     title: str = "Image Annotation Tool"
     description: str = "Annotate images"
     num_classes: int = 5
-    images_folder: str = "images"
     max_history: int = 10
 
 config = sp.parse(Config, config_path="./config.yaml")
 
-# Database setup
+# Database setup - will be reassigned when folder changes
 db = database(f'{config.images_folder}/annotations.db')
 
 class Annotation:
@@ -33,6 +33,28 @@ class Annotation:
     
 annotations = db.create(Annotation, pk='id')
 
+def switch_folder(new_folder: str):
+    """Switch to a different data folder."""
+    global config, db, annotations, state
+    
+    # Update config
+    config.images_folder = f"data/{new_folder}"
+    
+    # Create new database connection
+    db = database(f'{config.images_folder}/annotations.db')
+    annotations = db.create(Annotation, pk='id')
+    
+    # Reset state
+    state.current_index = 0
+    state.filter_unannotated = False
+    state.filter_rating = None
+    state.history.clear()
+    state.selected.clear()
+    state.last_anchor = None
+    
+    # Set to first unannotated
+    state.current_index = find_first_unannotated()
+
 # Database is the single source of truth - no CSV imports needed
 
 # Initialize FastHTML app with custom styles
@@ -41,7 +63,7 @@ app, rt = fast_app(
         Link(rel='stylesheet', href='/styles.css'),
     ),
     pico=False,  # We're using custom styles instead of Pico CSS
-    debug=False  # Set to True for development
+    debug=True  # Enable debug mode to help troubleshoot
 )
 
 # State management
@@ -67,6 +89,13 @@ def get_image_files():
             images.extend(images_dir.rglob(f"*{ext.upper()}"))
     # Return paths relative to the images folder
     return sorted([img.relative_to(images_dir) for img in images])
+
+def get_available_folders():
+    """Get all available data folders."""
+    data_dir = Path("data")
+    if not data_dir.exists():
+        return []
+    return sorted([f.name for f in data_dir.iterdir() if f.is_dir()])
 
 def get_username():
     """Get current username."""
@@ -305,6 +334,26 @@ def index():
     
     return Titled(config.title,
         Div(
+            # Folder selection section
+            Div(
+                Div(
+                    Label("Choose Folder:", style="margin-right: 10px; font-weight: 600;"),
+                    Select(
+                        *[Option(folder, value=folder, selected=(f"data/{folder}" == config.images_folder)) 
+                          for folder in get_available_folders()],
+                        name="folder_select",
+                        hx_post="/switch_folder",
+                        hx_target="body",
+                        hx_swap="outerHTML",
+                        hx_trigger="change",
+                        cls="folder-select",
+                        style="padding: 8px 12px; border-radius: 6px; border: 2px solid #007bff; background: white; font-size: 14px; min-width: 300px;"
+                    ),
+                    style="display: flex; align-items: center; justify-content: center; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #007bff;"
+                ),
+                cls="folder-section"
+            ),
+            
             # Progress section
             Div(
                 Div(
@@ -454,44 +503,43 @@ def index():
             cls="container"
         ),
         Script(f"""
-            // Keyboard shortcuts
+            // Simple HTMX-based keyboard shortcuts
             document.addEventListener('keydown', function(e) {{
-                if (e.target.tagName === 'INPUT') return;
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
                 
                 // Number keys for rating (with navigation)
                 if (e.key >= '1' && e.key <= '{config.num_classes}') {{
-                    fetch('/rate_and_next/' + e.key, {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}}
-                    }}).then(response => response.text()).then(html => {{
-                        document.body.outerHTML = html;
+                    htmx.ajax('POST', '/rate_and_next/' + e.key, {{
+                        target: 'body',
+                        swap: 'outerHTML'
                     }});
                     e.preventDefault();
                     return;
                 }}
                 
-                // Navigation shortcuts
+                // Navigation shortcuts - trigger HTMX on existing buttons
+                let targetBtn = null;
                 switch(e.key) {{
                     case 'ArrowLeft':
-                        document.querySelector('.nav-btn:not(.undo-btn)')?.click();
-                        e.preventDefault();
+                        targetBtn = document.querySelector('button[hx-post="/prev"]');
                         break;
                     case 'ArrowRight':
-                        document.querySelector('.nav-btn:last-child')?.click();
-                        e.preventDefault();
+                        targetBtn = document.querySelector('button[hx-post="/next"]');
                         break;
                     case 'u': case 'U':
-                        document.querySelector('.undo-btn')?.click();
-                        e.preventDefault();
-                        break;
-                    case 'x': case 'X':
-                        document.querySelector('#mark-checkbox')?.click();
-                        e.preventDefault();
+                        targetBtn = document.querySelector('button[hx-post="/undo"]');
                         break;
                     case 'd': case 'D':
-                        document.querySelector('.delete-btn')?.click();
-                        e.preventDefault();
+                        targetBtn = document.querySelector('button[hx-post="/delete"]');
                         break;
+                    case 'x': case 'X':
+                        targetBtn = document.querySelector('#mark-checkbox');
+                        break;
+                }}
+                
+                if (targetBtn && !targetBtn.disabled) {{
+                    htmx.trigger(targetBtn, 'click');
+                    e.preventDefault();
                 }}
             }});
         """)
@@ -549,7 +597,7 @@ def browse(q: str = '', rating: str = '', show: str = 'all', marked: str = '', s
                 name="set_rating", cls="filter-select"
             ),
             Button("Apply", cls="page-btn",
-                   hx_post="/batch_rate", hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
+                   hx_post="/batch_rate", hx_target="body", hx_swap="outerHTML", hx_include="[name='set_rating'], .browser-filters *"),
             Button("Mark", cls="page-btn",
                    hx_post="/batch_mark", hx_vals={"action": "mark"}, hx_target="body", hx_swap="outerHTML", hx_include=".browser-filters *, .selection-bar *"),
             Button("Unmark", cls="page-btn",
@@ -633,13 +681,17 @@ def toggle_select(image: str = '', shift: str = '', q: str = '', rating: str = '
 
 @rt("/batch_rate", methods=["POST"])
 def batch_rate(set_rating: str = '', q: str = '', rating: str = '', show: str = 'all', marked: str = '', sort: str = 'name', page: str = '1'):
+    print(f"DEBUG batch_rate: set_rating='{set_rating}', selected_count={len(state.selected)}")
     if set_rating and set_rating.isdigit():
         val = int(set_rating)
         if 1 <= val <= config.num_classes:
+            print(f"DEBUG: Applying rating {val} to {len(state.selected)} images")
             for spath in list(state.selected):
+                print(f"DEBUG: Processing {spath}")
                 existing = annotations("image_path=?", (spath,), limit=1)
                 if existing:
                     annotations.update({'rating': val, 'timestamp': datetime.now().isoformat()}, existing[0].id)
+                    print(f"DEBUG: Updated existing annotation for {spath}")
                 else:
                     annotations.insert({
                         'image_path': spath,
@@ -648,6 +700,11 @@ def batch_rate(set_rating: str = '', q: str = '', rating: str = '', show: str = 
                         'timestamp': datetime.now().isoformat(),
                         'marked': False
                     })
+                    print(f"DEBUG: Created new annotation for {spath}")
+        else:
+            print(f"DEBUG: Rating {val} out of range (1-{config.num_classes})")
+    else:
+        print(f"DEBUG: Invalid set_rating value: '{set_rating}'")
     return browse(q=q, rating=rating, show=show, marked=marked, sort=sort, page=page)
 
 @rt("/batch_mark", methods=["POST"])
@@ -952,6 +1009,15 @@ def filter_rating(rating_filter_select: str = ''):
     
     return index()
 
+@rt("/switch_folder", methods=["POST"])
+def switch_folder_endpoint(folder_select: str = ''):
+    """Switch to a different data folder."""
+    if folder_select and folder_select in get_available_folders():
+        switch_folder(folder_select)
+        print(f"Switched to folder: data/{folder_select}")
+    
+    return index()
+
 @rt("/delete", methods=["POST"])
 def delete():
     """Delete current image file and its annotation."""
@@ -1008,25 +1074,35 @@ def navigate(direction):
         annotated_images = {a.image_path for a in annotations()}
         new_index = state.current_index
         
-        while True:
+        # Add safety counter to prevent infinite loops
+        attempts = 0
+        max_attempts = len(images)
+        
+        while attempts < max_attempts:
             new_index += direction
             if not (0 <= new_index < len(images)):
                 break
             if str(images[new_index]) not in annotated_images:
                 state.current_index = new_index
                 break
+            attempts += 1
     elif state.filter_rating is not None:
         # Skip images that don't have the selected rating
         rating_images = {a.image_path for a in annotations() if a.rating == state.filter_rating}
         new_index = state.current_index
         
-        while True:
+        # Add safety counter to prevent infinite loops
+        attempts = 0
+        max_attempts = len(images)
+        
+        while attempts < max_attempts:
             new_index += direction
             if not (0 <= new_index < len(images)):
                 break
             if str(images[new_index]) in rating_images:
                 state.current_index = new_index
                 break
+            attempts += 1
     else:
         # Normal navigation
         new_index = state.current_index + direction
@@ -1088,7 +1164,7 @@ if __name__ == "__main__":
     print(f"  - Starting at image {state.current_index + 1}: {str(get_current_image()) if get_current_image() else 'None'}")
     
     try:
-        serve()
+        serve(host="localhost", port=5001)
     except KeyboardInterrupt:
         print("\nShutting down...")
         print("Final cleanup of orphaned database entries...")
