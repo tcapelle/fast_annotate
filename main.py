@@ -20,8 +20,8 @@ class Config:
 
 config = sp.parse(Config, config_path="./config.yaml")
 
-# Database setup - will be reassigned when folder changes
-db = database(f'{config.images_folder}/annotations.db')
+# Database setup - will be set after folder initialization
+db = None
 
 class Annotation:
     id: int
@@ -31,14 +31,20 @@ class Annotation:
     timestamp: str
     marked: bool = False  # New field for marking images
     
-annotations = db.create(Annotation, pk='id')
+annotations = None
 
 def switch_folder(new_folder: str):
     """Switch to a different data folder."""
     global config, db, annotations, state
     
+    # Get the full path for the folder
+    folder_path = get_folder_path(new_folder)
+    if not folder_path:
+        print(f"Warning: Could not find folder path for {new_folder}")
+        return
+    
     # Update config
-    config.images_folder = f"data/{new_folder}"
+    config.images_folder = folder_path
     
     # Create new database connection
     db = database(f'{config.images_folder}/annotations.db')
@@ -90,12 +96,69 @@ def get_image_files():
     # Return paths relative to the images folder
     return sorted([img.relative_to(images_dir) for img in images])
 
+def find_annotation_folders(search_dir: Path = None):
+    """Find all folders containing annotations.db files in the immediate subdirectories only."""
+    if search_dir is None:
+        search_dir = Path(".")
+    
+    annotation_folders = []
+    
+    # Only search immediate subdirectories, not recursively
+    try:
+        for item in search_dir.iterdir():
+            if item.is_dir() and (item / "annotations.db").exists():
+                try:
+                    rel_path = item.relative_to(search_dir)
+                    annotation_folders.append({
+                        "name": str(rel_path),
+                        "path": str(item)
+                    })
+                except ValueError:
+                    continue
+    except (PermissionError, OSError):
+        pass
+    
+    return sorted(annotation_folders, key=lambda x: x["name"])
+
 def get_available_folders():
-    """Get all available data folders."""
-    data_dir = Path("data")
-    if not data_dir.exists():
-        return []
-    return sorted([f.name for f in data_dir.iterdir() if f.is_dir()])
+    """Get all available annotation folders."""
+    if hasattr(config, 'images_folder') and config.images_folder and Path(config.images_folder).exists():
+        current_folder = Path(config.images_folder)
+        parent_dir = current_folder.parent
+        
+        annotation_folders = find_annotation_folders(parent_dir)
+        return [f["name"] for f in annotation_folders]
+    
+    # Fallback: look in common locations
+    for search_path in [Path("data"), Path(".")]:
+        if search_path.exists():
+            annotation_folders = find_annotation_folders(search_path)
+            if annotation_folders:
+                return [f["name"] for f in annotation_folders]
+    
+    return []
+
+def get_folder_path(folder_name: str):
+    """Get the full path for a folder name."""
+    # Check current folder's parent first
+    if hasattr(config, 'images_folder') and config.images_folder and Path(config.images_folder).exists():
+        current_folder = Path(config.images_folder)
+        parent_dir = current_folder.parent
+        
+        annotation_folders = find_annotation_folders(parent_dir)
+        for folder in annotation_folders:
+            if folder["name"] == folder_name:
+                return folder["path"]
+    
+    # Fallback: search in common locations
+    for search_path in [Path("data"), Path(".")]:
+        if search_path.exists():
+            annotation_folders = find_annotation_folders(search_path)
+            for folder in annotation_folders:
+                if folder["name"] == folder_name:
+                    return folder["path"]
+    
+    return None
 
 def get_username():
     """Get current username."""
@@ -314,6 +377,36 @@ def render_browser_grid(q: str = '', rating: str = '', show: str = 'all', marked
 @rt("/")
 def index():
     """Main annotation interface."""
+    # Check if we have a valid images_folder
+    if not hasattr(config, 'images_folder') or not config.images_folder or not Path(config.images_folder).exists():
+        # No valid folder - show folder selection interface
+        available_folders = get_available_folders()
+        return Titled(config.title,
+            Div(
+                H2("Select a Folder to Start Annotating", style="text-align: center; margin-bottom: 30px;"),
+                Div(
+                    "Please select a folder containing an annotations.db file to begin.",
+                    style="text-align: center; margin-bottom: 30px; color: #666;"
+                ),
+                Div(
+                    *[Div(
+                        Span(f"📁 {folder}", style="flex: 1;"),
+                        Button(
+                            "Select",
+                            hx_post="/switch_folder",
+                            hx_vals=f"js:{{folder_select: '{folder}'}}",
+                            hx_target="body",
+                            hx_swap="outerHTML",
+                            style="padding: 6px 12px; border-radius: 4px; border: 1px solid #007bff; background: #007bff; color: white; cursor: pointer;"
+                        ),
+                        style="display: flex; align-items: center; justify-content: space-between; padding: 10px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 4px; background: white;"
+                    ) for folder in available_folders[:10]],  # Show first 10 folders
+                    style="max-width: 600px; margin: 0 auto;"
+                ),
+                style="max-width: 800px; margin: 2rem auto; padding: 2rem; background: white; border-radius: 8px;"
+            )
+        )
+    
     images = get_image_files()
     if not images:
         return Titled(config.title,
@@ -339,7 +432,7 @@ def index():
                 Div(
                     Label("Choose Folder:", style="margin-right: 10px; font-weight: 600;"),
                     Select(
-                        *[Option(folder, value=folder, selected=(f"data/{folder}" == config.images_folder)) 
+                        *[Option(folder, value=folder, selected=(get_folder_path(folder) == config.images_folder)) 
                           for folder in get_available_folders()],
                         name="folder_select",
                         hx_post="/switch_folder",
@@ -348,6 +441,18 @@ def index():
                         hx_trigger="change",
                         cls="folder-select",
                         style="padding: 8px 12px; border-radius: 6px; border: 2px solid #007bff; background: white; font-size: 14px; min-width: 300px;"
+                    ),
+                    Input(
+                        type="file",
+                        webkitdirectory=True,
+                        directory=True,
+                        name="folder_browser",
+                        hx_post="/browse_folder",
+                        hx_target="body",
+                        hx_swap="outerHTML", 
+                        hx_trigger="change",
+                        cls="folder-browser",
+                        style="margin-left: 10px;"
                     ),
                     style="display: flex; align-items: center; justify-content: center; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #007bff;"
                 ),
@@ -655,7 +760,7 @@ def toggle_select(image: str = '', shift: str = '', q: str = '', rating: str = '
     if shift_on and state.last_anchor:
         # Select range between last_anchor and current within filtered, sorted items
         items = _filtered_items(q=q, rating=rating, show=show, marked=marked, sort=sort)
-        order = [str(p) for (p, _r, _m) in items]
+        order = [str(p) for (p, _, _) in items]
         try:
             i1 = order.index(state.last_anchor)
             i2 = order.index(sp)
@@ -1013,9 +1118,19 @@ def filter_rating(rating_filter_select: str = ''):
 def switch_folder_endpoint(folder_select: str = ''):
     """Switch to a different data folder."""
     if folder_select and folder_select in get_available_folders():
+        folder_path = get_folder_path(folder_select)
         switch_folder(folder_select)
-        print(f"Switched to folder: data/{folder_select}")
+        print(f"Switched to folder: {folder_path}")
     
+    return index()
+
+@rt("/browse_folder", methods=["POST"])
+def browse_folder():
+    """Handle folder selection from directory input."""
+    # Note: This will be triggered when user selects a folder
+    # The browser will send the files in the selected folder
+    # We'll need JavaScript to extract the folder path from the first file
+    print("Folder browse triggered - need to extract folder path from files")
     return index()
 
 @rt("/delete", methods=["POST"])
@@ -1139,6 +1254,13 @@ def cleanup_orphaned_entries():
         print(f"Cleaned up {orphaned_count} orphaned database entries")
     else:
         print("No orphaned database entries found")
+
+# No automatic folder searching - user will select manually if needed
+
+# Initialize database after folder is set
+if hasattr(config, 'images_folder') and config.images_folder:
+    db = database(f'{config.images_folder}/annotations.db')
+    annotations = db.create(Annotation, pk='id')
 
 # Set initial position
 state.current_index = find_first_unannotated()
