@@ -8,11 +8,6 @@ env/
 venv/
 .venv/
 
-# Database
-*.db
-*.db-shm
-*.db-wal
-
 # CSV files (no longer used)
 *.csv
 
@@ -36,6 +31,8 @@ uv.lock
 
 # Images
 images*/
+data/
+new_data/
 
 # Claude
 .claude/
